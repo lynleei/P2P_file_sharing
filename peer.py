@@ -1,49 +1,59 @@
 import socket
 import threading
+import time
 
-# Peer class that will represent each node in the network. 
-# This class will handle creating and managing connections with peers and exchanging data.
+
 class Peer:
     def __init__(self, host, port):
         self.host = host
         self.port = port
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connections = []
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    # Method to create connections with other peers.
     def connect(self, peer_host, peer_port):
         try:
-            connection = self.socket.connect((peer_host, peer_port))
-            self.connections.append(connection)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((peer_host, peer_port))
+            self.connections.append(s)
             print(f"Connected to {peer_host}:{peer_port}")
         except socket.error as e:
             print(f"Failed to connect to {peer_host}:{peer_port}. Error: {e}")
 
-    # Listen method to accept incoming connections from other peers.
     def listen(self):
-        self.socket.bind((self.host, self.port))
-        self.socket.listen(10)
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(10)
         print(f"Listening for connections on {self.host}:{self.port}")
 
         while True:
-            connection, address = self.socket.accept()
-            self.connections.append(connection)
-            print(f"Accepted connection from {address}")
+            conn, addr = self.server_socket.accept()
+            self.connections.append(conn)
+            print(f"Accepted connection from {addr}")
 
-    # Data exchange method to send and receive data from connected peers.
     def send_data(self, data):
-        for connection in self.connections:
+        for conn in self.connections:
             try:
-                connection.sendall(data.encode())
+                conn.sendall(data.encode())
             except socket.error as e:
                 print(f"Failed to send data. Error: {e}")
 
-    # start listening thread
-    def start(self):
-        listen_thread = threading.Thread(target=self.listen)
+    def start(self):        
+        listen_thread = threading.Thread(target=self.listen, daemon=True)
         listen_thread.start()
 
-    def main():
-        print('"')
-    if __name__ == "__main__":
-        main()
+
+def main():
+    peer1 = Peer("127.0.0.1", 5000)
+    peer1.start()
+
+    time.sleep(1)  # give time for the server to start
+
+    peer2 = Peer("127.0.0.1", 6000)
+    peer2.start()
+    peer2.connect("127.0.0.1", 5000)
+
+    time.sleep(1)  # give time to connect
+
+    peer2.send_data("Hello from Peer 2!")
+    peer1.send_data("Hello back from Peer 1!")
+if __name__ == "__main__":
+    main()
