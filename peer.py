@@ -47,11 +47,16 @@ class Peer:
                     self.seen.add(msg_part[0])
                     print(f"Received: {msg_part[1]}")
                     if msg_part[4] == "file_request":
-                        pass
-                        # verify if I have this file, If I do, then send file to sender, else flood
+                        if msg_part[1] in self.shareFile:
+                            self.send_direct_message(msg_part[2], msg_part[3])
+                        else:
+                            self.flood(message, exclude_conn=conn)
+
                     elif msg_part[4] == "file_response":
-                        pass
-                    self.flood(message, exclude_conn=conn)
+                        print(msg_part)
+                        self.request.remove(msg_part[1])
+                        # perform download stuff
+
             except Exception as e:
                 print(f"Error in receiving: {e}")
                 break
@@ -76,6 +81,7 @@ class Peer:
                     print(f"Failed to send data. Error: {e}")
 
     def send_data(self, data):
+        self.request.append(data)
         id = str(uuid.uuid4())
         msg = f"{id};{data};{self.host};{self.port};file_request"
         for conn in self.connections:
