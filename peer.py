@@ -45,10 +45,10 @@ class Peer:
 
                 if msg_part[0] not in self.seen:
                     self.seen.add(msg_part[0])
-                    print(f"Received: {msg_part[1]}")
+                    print(f"Received: {msg_part[1]}, {msg_part[4]}")
                     if msg_part[4] == "file_request":
                         if msg_part[1] in self.shareFile:
-                            self.send_direct_message(msg_part[2], msg_part[3])
+                            self.send_direct_message(msg_part[2], msg_part[3], msg_part[1])
                         else:
                             self.flood(message, exclude_conn=conn)
 
@@ -66,7 +66,7 @@ class Peer:
         msg = f"{id};{filename};{self.host};{self.port};file_response"
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((host, port))
+            s.connect((host, int(port)))
             s.sendall(msg.encode())
             s.close()
         except Exception as e:
@@ -100,6 +100,7 @@ class Peer:
 
 def main():
     peer1 = Peer("127.0.0.1", 5000)
+    peer1.shareFile = ["file1.txt"]
     peer1.start()
 
     time.sleep(1)  # give time for the server to start
@@ -111,7 +112,7 @@ def main():
     peer1.connect("127.0.0.1", 6000)
 
     time.sleep(1)  # give time to connect
-    peer2.send_data("Hello from Peer 2!")
+    peer2.send_data("file1.txt")
 
     while True:
         pass
