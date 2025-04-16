@@ -62,6 +62,7 @@ class Peer:
 
     # --------------------------------------------------------------------------------
     # this is probably the part where we implement the concurrency of file transfers
+    # also need to handle ping pong here
     # --------------------------------------------------------------------------------
     def receive_connection(self, conn):
         while True:
@@ -90,6 +91,47 @@ class Peer:
             except Exception as e:
                  print(f"Error in receiving: {e}")
                  break
+            
+    # -------------------------------------
+    # Peer Discovery (ping/pong)
+    # -------------------------------------
+    def ping_peers(self):
+        """
+        Probing a peer to see if they're alive
+        Send a "ping" semicolon message to all peers. 
+        Embed known_peers in the payload if we want them to discover each other.
+        """
+        msg_id = str(uuid.uuid4())
+        known_peers_str = str(list(self.known_peers))
+        # Format: "msg_id;payload;host;port;type"
+        # We'll place known_peers_str in 'payload'
+        msg = f"{msg_id};{known_peers_str};{self.host};{self.port};ping"
+        self._flood(msg)
+
+    def handle_ping(self, conn, msg_id, msg_host, msg_port):
+        """
+        A reply to a Ping
+        Upon receiving 'ping', respond with 'pong' containing our known_peers.
+        """
+        pong_id = str(uuid.uuid4())
+        # Add known_peers in the payload
+        peers_payload = str(list(self.known_peers))
+        resp = f"{pong_id};{peers_payload};{self.host};{self.port};pong"
+        conn.sendall(resp.encode())
+
+    def handle_pong(self, payload):
+        """
+        Update known_peers set based on the payload we get from a pong.
+        The payload is str(list_of_peers).
+        """
+        try:
+            # Evaluate the string like "[(ip1, port1), (ip2, port2)]"
+            new_peers = eval(payload)
+            for p in new_peers:
+                self.known_peers.add(tuple(p))
+            print(f"[DISCOVERY] Updated known peers: {self.known_peers}")
+        except:
+            pass
 
     def send_direct_message(self, host, port, filename):
         id = str(uuid.uuid4())
