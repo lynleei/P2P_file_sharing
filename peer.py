@@ -9,7 +9,7 @@ import hashlib
 CHUNK_SIZE = 1024                      # bytes per chunk
 
 class Peer:
-    def __init__(self, host, port):
+    def __init__(self, host, port, shared_dir):
         self.host, self.port = host, port
         self.server_socket   = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connections: list[socket.socket]     = []
@@ -20,6 +20,24 @@ class Peer:
         self.shared_dir = "shared"
         os.makedirs(self.shared_dir, exist_ok=True)
         self._index_files()  # Auto-index shared files
+        self.scan_shared(shared_dir)
+
+    def scan_shared(self, directory: str = None):
+        target_dir = directory or self.shared_dir
+        try:
+            entries = os.listdir(target_dir)
+        except OSError as e:
+            print(f"[ERR ] cannot list directory {target_dir}: {e}")
+            return
+
+        files = []
+        for name in entries:
+            path = os.path.join(target_dir, name)
+            if os.path.isfile(path):
+                files.append(name)
+
+        self.shareFile = files
+        print(f"[INDEX] shareFile updated: {self.shareFile}")
 
     def _index_files(self):
         """Refresh list of available files from shared directory"""
@@ -33,10 +51,11 @@ class Peer:
     def _listen_loop(self):
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(10)
-        print(f"[LISTEN] {self.host}:{self.port}")
+        #print(f"[LISTEN] {self.host}:{self.port}")
         while True:
             conn, addr = self.server_socket.accept()
-            self.connections.append(conn); self.known_peers.add(addr)
+            self.connections.append(conn); 
+            #self.known_peers.add(addr)
             threading.Thread(target=self.receive_connection,
                              args=(conn,), daemon=True).start()
 
@@ -46,7 +65,8 @@ class Peer:
             s.connect((ip, port))
             self.connections.append(s)
             self.known_peers.add((ip, port))
-            print(f"[DIAL] → {ip}:{port}")
+            
+            print(f"{self.port}: [DIAL] → {ip}:{port}")
         except Exception as e:
             print(f"Connection failed: {e}")
 
@@ -55,10 +75,11 @@ class Peer:
         for c in self.connections:
             if c is exclude_conn: 
                 continue
-            try: 
-                c.sendall(msg.encode())
-            except: 
-                pass
+            else:
+                try: 
+                    c.sendall(msg.encode())
+                except: 
+                    pass
 
     # ───────── main per‑connection loop ─────────
     def receive_connection(self, conn):
@@ -70,9 +91,18 @@ class Peer:
                 parts = raw.decode(errors="ignore").split(";")
                 if len(parts) < 5: 
                     continue
+
                 mid, payload, phost, pport, mtype = parts[:5]
+                                                       # pport is a string
+                peer_addr = (phost, int(pport))
+                if peer_addr != (self.host, self.port):     # don’t add myself
+                    self.known_peers.add(peer_addr)
+
+            except ValueError:
+                pass
                 if mid in self.seen: 
                     continue
+
                 self.seen.add(mid)
                 print(f"[RX] {mtype:14} | {payload}")
 
@@ -193,15 +223,33 @@ class Peer:
 
 # ─────────────────── CLI ────────────────────
 def main():
-    p1 = Peer("127.0.0.1", 5000)
+    p1 = Peer("127.0.0.1", 5000, "shared\p1")
     p1.start()
 
-    p2 = Peer("127.0.0.1", 6000)
+    p2 = Peer("127.0.0.1", 6000, "shared\p2")
     p2.start()
+
+    p3 = Peer("127.0.0.1", 7000, "shared\p3")
+    p3.start()
+
+    p4 = Peer("127.0.0.1", 8000, "shared\p4")
+    p4.start()
+
+    p5 = Peer("127.0.0.1", 9000, "shared\p5")
+    p5.start()
 
     # Connect peers to each other
     p2.connect("127.0.0.1", 5000)
     p1.connect("127.0.0.1", 6000)
+
+    p3.connect("127.0.0.1", 5000)
+    p1.connect("127.0.0.1", 7000)
+
+    p4.connect("127.0.0.1", 6000)
+    p2.connect("127.0.0.1", 8000)
+
+    p5.connect("127.0.0.1", 6000)
+    p2.connect("127.0.0.1", 9000)
 
     active = p1
     print("Type 'help' for commands.")
