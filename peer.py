@@ -3,7 +3,6 @@ import threading
 import time
 import uuid
 import os
-import json
 import hashlib
 
 CHUNK_SIZE = 1024  # Size of each chunk to be sent over the network (need for chunked file transfer)
@@ -75,7 +74,15 @@ class Peer:
 
                 if msg_part[0] not in self.seen:
                     self.seen.add(msg_part[0])
-                    print(f"Received: {msg_part[1]}, {msg_part[4]}")
+
+                    msg_id    = msg_part[0]          # unique id
+                    payload   = msg_part[1]          # free‑form text
+                    msg_host  = msg_part[2]          # sender host
+                    msg_port  = msg_part[3]          # sender port as string
+                    msg_type  = msg_part[4]          # command type
+
+                    print(f"Received: {payload}, {msg_type}")
+                    
                     if msg_part[4] == "file_request":
                         if msg_part[1] in self.shareFile:
                              self.send_direct_message(msg_part[2], msg_part[3])
@@ -86,7 +93,30 @@ class Peer:
                     elif msg_part[4] == "file_response":
                          print(msg_part)
                          self.request.remove(msg_part[1])
-                         # perform download stuff
+
+                    # the ping/pong stuff
+                    elif msg_type == "ping":
+                        self.handle_ping(conn, msg_id, msg_host, msg_port)
+
+                    elif msg_type == "pong":
+                        self.handle_pong(payload)
+
+                    # the download request stuff
+                    elif msg_type == "download_request":
+                        filename = msg_part[5] if len(msg_part) > 5 else ""
+                        self.download_request(conn, (msg_host, msg_port), filename)
+
+                    elif msg_type == "download_ready":
+                        filename      = msg_part[5] if len(msg_part) > 5 else ""
+                        expected_hash = msg_part[6] if len(msg_part) > 6 else None
+                        self.receive_file(conn, filename, expected_hash)
+
+                    elif msg_type == "list_request":
+                        self._handle_list_request(conn)
+
+                    elif msg_type == "list_response":
+                        self._handle_list_response(payload)
+
  
             except Exception as e:
                  print(f"Error in receiving: {e}")
@@ -106,7 +136,7 @@ class Peer:
         # Format: "msg_id;payload;host;port;type"
         # We'll place known_peers_str in 'payload'
         msg = f"{msg_id};{known_peers_str};{self.host};{self.port};ping"
-        self._flood(msg)
+        self.flood(msg)
 
     def handle_ping(self, conn, msg_id, msg_host, msg_port):
         """
@@ -152,13 +182,6 @@ class Peer:
                 except socket.error as e:
                     print(f"Failed to send data. Error: {e}")
 
-    def flood_json(self, message, exclude_conn=None):
-         """
-        Flood a JSON-based message (dict) to all peers except exclude_conn.
-        ----> dont necessarily have to incorporate json so can do without but will need to modify chunked file transfer
-        """
-         pass
-
     def send_data(self, data):
         """
         This function creates a semicolon-delimited message for data (filename)
@@ -171,6 +194,24 @@ class Peer:
                 conn.sendall(msg.encode())
             except socket.error as e:
                 print(f"Failed to send data. Error: {e}")
+
+    # new stuff added to run the main loop
+    def list_files(self):
+        msg_id = str(uuid.uuid4())
+        msg = f"{msg_id};ASK_FOR_LIST;{self.host};{self.port};list_request"
+        self.flood(msg)
+
+    def _handle_list_request(self, conn):
+        listing = "|".join(self.shareFile)      # simple: just filenames
+        msg_id  = str(uuid.uuid4())
+        resp = f"{msg_id};{listing};{self.host};{self.port};list_response"
+        conn.sendall(resp.encode())
+
+    def _handle_list_response(self, payload):
+        for fname in payload.split("|"):
+            if fname and fname not in self.shareFile:
+                self.shareFile.append(fname)
+        print("[INDEX] shareFile updated:", self.shareFile)
 
     # -------------------------------------
     # Chunked file transfer
@@ -266,23 +307,89 @@ class Peer:
         
 
 def main():
-    peer1 = Peer("127.0.0.1", 5000)
-    peer1.shareFile = ["file1.txt"]
-    peer1.start()
+    """
+    Minimal CLI so you can drive every major feature from the keyboard.
 
-    time.sleep(1)  # give time for the server to start
+    Commands implemented
+    --------------------
+    help                     show this help
+    ping                     discover peers (PING/PONG)
+    peers                    print self.known_peers
+    list                     broadcast list_request  ➜  TODO: you still need list_files() / list_response handler
+    showfiles                print files we know about in self.shareFile
+    say <msg>                flood a generic file_request with <msg>               (already works)
+    get <filename>           start a download_request for <filename>               (request_file() OK)
+    exit                     quit the program
+    """
+    # ---------- create two demo peers on localhost ----------
+    peer1 = Peer("127.0.0.1", 5000)
+    peer1.shareFile = ["file1.txt"]          # pretend we have one file to share
+    peer1.start()                            # start listening in background
+
+    time.sleep(1)                            # let peer1 finish binding
 
     peer2 = Peer("127.0.0.1", 6000)
     peer2.start()
-    peer2.connect("127.0.0.1", 5000)
+    peer2.connect("127.0.0.1", 5000)         # peer2 → peer1
 
-    peer1.connect("127.0.0.1", 6000)
+    peer1.connect("127.0.0.1", 6000)         # peer1 → peer2   (mesh them)
 
-    time.sleep(1)  # give time to connect
-    peer2.send_data("file1.txt")
-
+    # --------------- interactive loop ----------------
+    active_peer = peer1                      # type commands that run on peer1
+    print("[INFO] Type 'help' for commands.")
     while True:
-        pass
+        try:
+            cmd = input(">>> ").strip().split()
+            if not cmd:
+                continue
+
+            if cmd[0] == "help":
+                print("""Commands
+ping                 discover peers
+peers                show known peers
+list                 ask peers for file lists
+showfiles            show local shareFile cache
+get <filename>       download a file
+say <msg>            broadcast a chat/file_request
+exit                 quit
+""")
+
+            elif cmd[0] == "ping":
+                active_peer.ping_peers()                     # ★ uses ping_peers()
+                # NOTE: handle_ping / handle_pong must be called inside receive_connection()
+
+            elif cmd[0] == "peers":
+                print("Known peers:", active_peer.known_peers)
+
+            elif cmd[0] == "list":
+                # ★ TODO – you still need to add a list_files() method & its handlers
+                if hasattr(active_peer, "list_files"):
+                    active_peer.list_files()
+                else:
+                    print("list_files() not implemented yet!")
+
+            elif cmd[0] == "showfiles":
+                print("shareFile contents:", active_peer.shareFile)
+
+            elif cmd[0] == "say" and len(cmd) >= 2:
+                msg = " ".join(cmd[1:])
+                active_peer.send_data(msg)                    # already works
+
+            elif cmd[0] == "get" and len(cmd) == 2:
+                filename = cmd[1]
+                active_peer.request_file(filename)           # ★ kicks off download_request flow
+
+            elif cmd[0] == "exit":
+                print("[INFO] Bye!")
+                break
+
+            else:
+                print("[WARN] Unknown command. Type 'help'.")
+
+        except KeyboardInterrupt:
+            print("\n[INFO] Ctrl‑C – exiting.")
+            break
+
 
 
 if __name__ == "__main__":
