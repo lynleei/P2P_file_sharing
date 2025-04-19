@@ -17,7 +17,7 @@ class Peer:
         self.seen: set[str]                       = set()
         self.shareFile: list[str]                 = []   # filenames to share
         self.request:   list[str]                 = []   # outstanding requests
-        self.shared_dir = ""
+        self.shared_dir = shared_dir
         os.makedirs(self.shared_dir, exist_ok=True)
         self._index_files()  # Auto-index shared files
         self.scan_shared(shared_dir)
@@ -90,16 +90,84 @@ class Peer:
                         else:
                             self.flood(message, exclude_conn=conn)
                     elif msg_part[4] == "download_request":
-                        self.handle_download_request(conn, msg_part[1])
+                        self.send_file(conn, msg_part[1])
                     elif msg_part[4] == "file_response":
                         if msg_part[1] in self.request:
-                            self.send_download_request(msg_part[2], int(msg_part[3]), msg_part[1], "download_request")
+                            threading.Thread(
+                                target=self.download_file,
+                                args=(msg_part[2], int(msg_part[3]), msg_part[1]),
+                                daemon=True
+                            ).start()
                             self.request.remove(msg_part[1])
 
             except Exception as e:
                 print(f"Error in receiving: {e}")
                 break
 
+    def send_file(self, conn, filename):
+        try:
+            sha256 = hashlib.sha256()
+            with open(filename, "rb") as f:
+                while chunk := f.read(1024):
+                    sha256.update(chunk)
+                    conn.sendall(chunk)
+
+            # End of file marker
+            conn.sendall(b"<EOF>")
+
+            # Send SHA-256 hash for integrity check
+            file_hash = sha256.hexdigest().encode()
+            conn.sendall(b"<HASH>" + file_hash)
+
+            print(f"[{self.port}] Sent file '{filename}' with hash {file_hash.decode()}")
+        except Exception as e:
+            print(f"[{self.port}] Failed to send file '{filename}': {e}")
+
+    def download_file(self, peer_host, peer_port, filename, save_as=None):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((peer_host, peer_port))
+
+            # Send the download request
+            s.sendall(f"download_request;{filename}".encode())
+
+            sha256 = hashlib.sha256()
+            file_data = b""
+
+            # Receive file chunks until <EOF>
+            while True:
+                chunk = s.recv(1024)
+                if b"<EOF>" in chunk:
+                    chunk, _ = chunk.split(b"<EOF>")
+                    file_data += chunk
+                    sha256.update(chunk)
+                    break
+                file_data += chunk
+                sha256.update(chunk)
+
+            # Receive <HASH> block
+            hash_block = s.recv(1024)
+            if b"<HASH>" in hash_block:
+                received_hash = hash_block.split(b"<HASH>")[1].decode()
+            else:
+                received_hash = ""
+
+            # Save file
+            file_name = save_as if save_as else filename
+            with open(file_name, "wb") as f:
+                f.write(file_data)
+
+            computed_hash = sha256.hexdigest()
+
+            if received_hash == computed_hash:
+                print(f"[{self.port}] ✅ File '{filename}' downloaded and verified successfully.")
+            else:
+                print(f"[{self.port}] ❌ File hash mismatch! Expected {received_hash}, got {computed_hash}")
+
+            s.close()
+
+        except Exception as e:
+            print(f"[{self.port}] Failed to download '{filename}': {e}")
 
     # ───────── SHA‑256 helper ─────────
 
@@ -144,7 +212,8 @@ class Peer:
 
     def handle_download_request(self, conn, fname):
         path = os.path.join(self.shared_dir, fname)
-        if not os.path.isfile(path): return
+        if not os.path.isfile(path):
+            return
 
         file_size = os.path.getsize(path)
         file_hash = self._compute_sha256(path)
@@ -222,7 +291,7 @@ def main():
     p5.connect("127.0.0.1", 6000)
     p2.connect("127.0.0.1", 9000)
 
-    active = p2
+    active = p1
     print("Type 'help' for commands.")
 
     while True:
