@@ -17,7 +17,7 @@ class Peer:
         self.seen: set[str]                       = set()
         self.shareFile: list[str]                 = []   # filenames to share
         self.request:   list[str]                 = []   # outstanding requests
-        self.shared_dir = "shared"
+        self.shared_dir = ""
         os.makedirs(self.shared_dir, exist_ok=True)
         self._index_files()  # Auto-index shared files
         self.scan_shared(shared_dir)
@@ -86,11 +86,15 @@ class Peer:
                     if msg_part[4] == "file_request":
                         # verify if I have this file, If I do, then send file to sender, else flood
                         if msg_part[1] in self.shareFile:
-                            self.send_direct_message()
+                            self.send_direct_message(msg_part[2], int(msg_part[3]), msg_part[1], "file_response")
                         else:
                             self.flood(message, exclude_conn=conn)
+                    elif msg_part[4] == "download_request":
+                        self.handle_download_request(conn, msg_part[1])
                     elif msg_part[4] == "file_response":
-                        pass
+                        if msg_part[1] in self.request:
+                            self.send_download_request(msg_part[2], int(msg_part[3]), msg_part[1], "download_request")
+                            self.request.remove(msg_part[1])
 
             except Exception as e:
                 print(f"Error in receiving: {e}")
@@ -108,6 +112,7 @@ class Peer:
         return h.hexdigest()
 
     def send_data(self, filename):
+        self.request.append(filename)
         id = str(uuid.uuid4())
         msg = f"{id};{filename};{self.host};{self.port};file_request"
         for conn in self.connections:
@@ -124,16 +129,68 @@ class Peer:
                 except socket.error as e:
                     print(f"Failed to send data. Error: {e}")
 
-    def send_direct_message(self, host, port, filename):
+    def send_direct_message(self, host, port, filename, type):
         id = str(uuid.uuid4())
-        msg = f"{id};{filename};{self.host};{self.port};file_response"
+        msg = f"{id};{filename};{self.host};{self.port};{type}"
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((host, port))
+            s.connect((host, int(port)))
             s.sendall(msg.encode())
             s.close()
         except Exception as e:
             print(f"Direct send to {host}:{port} failed: {e}")
+
+    # ───────── Download ─────────
+
+    def handle_download_request(self, conn, fname):
+        path = os.path.join(self.shared_dir, fname)
+        if not os.path.isfile(path): return
+
+        file_size = os.path.getsize(path)
+        file_hash = self._compute_sha256(path)
+        mid = str(uuid.uuid4())
+
+        # Send header: include filename, hash, size
+        header = f"{mid};ready;{self.host};{self.port};download_ready;{fname};{file_hash};{file_size}"
+        conn.sendall(header.encode())
+
+        # Send file in chunks
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                conn.sendall(chunk)
+        print(f"[SEND] {fname}")
+
+
+    def handle_download_ready(self, conn, fname, expected_hash, file_size):
+        try:
+            file_size = int(file_size)
+            os.makedirs("downloads", exist_ok=True)
+            dest = os.path.join("downloads", fname)
+
+            received = 0
+            with open(dest, "wb") as f:
+                while received < file_size:
+                    chunk = conn.recv(min(CHUNK_SIZE, file_size - received))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    received += len(chunk)
+
+            # Check integrity
+            actual_hash = self._compute_sha256(dest)
+            if actual_hash == expected_hash:
+                print(f"[GET ] {fname} OK")
+                self.shareFile.append(fname)
+            else:
+                print(f"[GET ] {fname} BAD HASH")
+                os.remove(dest)
+
+        except Exception as e:
+            print(f"[ERR ] Download failed: {e}")
+
 
 # ─────────────────── CLI ────────────────────
 def main():
